@@ -1,0 +1,700 @@
+---
+title: "project_group14"
+author: "Anyuan Xu, Anxi Liu"
+date: "4/19/2021"
+output:
+  pdf_document: default
+  html_document: default
+  word_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+### Import Data Set
+```{r}
+MVP_df <- read.csv("mvp.csv", header=TRUE)
+MVP_df_test <- read.csv("2017-18_mvp.csv", header=TRUE)
+MVP_df <- MVP_df[,c(-24:-27)]
+MVP_df_test <- MVP_df_test[,c(-24:-27)]
+str(MVP_df)
+```
+
+### Data Exploration and Visualization
+```{r}
+library(tidyverse)
+# Who received the most MVP nominations-------------------
+MVP_df_count <- group_by(MVP_df, Player) %>% summarise(count = n())
+MVP_df_count1<-subset(MVP_df_count,count>5,select=c(Player,count))
+ggplot(data=MVP_df_count1)+
+ geom_bar(mapping = aes(x=Player,y=count), stat='identity',width=0.5)+
+ylab("count of MVP nominations")+ coord_flip()
+# age histogram-----------------------------
+ggplot(MVP_df, aes(x=Age)) + 
+  geom_histogram(color="black", fill="white", binwidth = 1)
+
+# 3d scatter plot
+library(scatterplot3d)
+attach(MVP_df)
+scatterplot3d(PTS, VORP, Share,
+ highlight.3d = TRUE,
+ pch = 16,
+ main = "3D scatter plot")
+detach(MVP_df)
+
+```
+
+### Data Preparation and Preprocessing
+```{r}
+library(psych) 
+library(tidyverse)
+library(corrplot) 
+
+# using domain knowledge: remove irrelevant variables
+MVP_df1 <- MVP_df[,c(-1:-6)]
+MVP_df1_test <- MVP_df_test[,c(-1:-6)]
+# data summary
+summary(MVP_df1)
+
+# original 
+MVP_df2 <- MVP_df1[,c(-3,-12,-13,-15,-17)]
+# normalization
+MVP_norm_df <- cbind(MVP_df1$Share, as.data.frame(scale(MVP_df1[,2:17]))) %>% rename(Share = "MVP_df1$Share")
+MVP_norm_df_t <- cbind(MVP_df1_test$Share, as.data.frame(scale(MVP_df1_test[,2:17]))) %>% rename(Share = "MVP_df1_test$Share")
+# 1. correlation analysis
+MVP_norm_df1 <- MVP_norm_df[c(2:17)]
+MVP_norm_df_t <- MVP_norm_df_t[c(2:17)]
+corrplot(cor(MVP_norm_df1))
+pairs.panels(MVP_norm_df1 , cor = TRUE)
+
+# variable selection: removing variables that are strongly correlated to others is useful for avoiding multicollinearity problems
+MVP_norm_df2 <- MVP_norm_df1[,c(-2,-11,-12,-14,-16)]
+MVP_norm_df_t <- MVP_norm_df_t[,c(-2,-11,-12,-14,-16)]
+corrplot(cor(MVP_norm_df2))
+
+
+# normal dataset
+MVP_norm_df3 <- cbind(MVP_norm_df$Share, MVP_norm_df2) %>% rename(Share = "MVP_norm_df$Share")
+MVP_norm_df_t <- cbind(MVP_df1_test$Share, MVP_norm_df_t) %>% rename(Share = "MVP_df1_test$Share")
+
+
+# 2. PCA analysis
+
+# input the correlation matrix to fa.parallel() function to determine the number of components to extract
+fa.parallel(cor(MVP_norm_df1), n.obs = 412 , fa = "pc", n.iter = 100, show.legend = TRUE, main = "Scree plot with parallel analysis")
+
+MVP_pca <- principal(MVP_norm_df1, nfactors = 5, rotate = "none", scores = TRUE)
+
+MVP_pca_df <- as.data.frame(MVP_pca$scores)
+
+factor.plot(MVP_pca)
+fa.diagram(MVP_pca, simple = FALSE)
+corrplot(cor(MVP_pca_df))
+pairs.panels(MVP_pca_df , cor = TRUE)
+
+
+# PCA dataset
+MVP_pca_df1 <- cbind(MVP_norm_df$Share, MVP_pca_df) %>% rename(Share = "MVP_norm_df$Share")
+
+```
+
+### Data Mining Techniques and Implementation
+### Performance Evaluation
+
+#### training and validation data set
+```{r}
+# partition the data into training (60%) and validation (40%) sets
+set.seed(100)
+train_index <- sample(rownames(MVP_norm_df3 ), dim(MVP_norm_df3 )[1]*0.6)
+valid_index <- setdiff(rownames(MVP_norm_df3 ),train_index)
+# dataset
+MVP_train_df <- MVP_norm_df3[train_index,]
+MVP_valid_df <- MVP_norm_df3[valid_index,]
+# PCA dataset
+MVP_train_pca_df <- MVP_pca_df1[train_index,]
+MVP_valid_pca_df <- MVP_pca_df1[valid_index,]
+```
+
+##### linear regression
+```{r}
+# linear regression
+linear_model1 <- lm(Share ~ ., data = MVP_train_df)
+summary(linear_model1)
+
+lr_predict1 <- predict(linear_model1, MVP_valid_df)
+
+# evaluating predictive performance 
+library(gains)
+lr_gain1 <- gains(MVP_valid_df$Share, lr_predict1)
+options(scipen=999)
+lr_share1 <- (MVP_valid_df$Share)
+
+# Lift chart
+par(pty="s")
+plot(c(0,lr_gain1$cume.pct.of.total*sum(lr_share1))~c(0,lr_gain1$cume.obs), 
+     xlab = "# cases", ylab = "Cumulative Share", main = "linear regression Lift Chart", type = "l", col = "blue")
+# baseline
+lines(c(0,sum(lr_share1))~c(0,dim(MVP_valid_df)[1]), col = "purple", lty = 2)
+
+# Decile-wise lift chart
+barplot(lr_gain1$mean.resp/mean(lr_share1), names.arg = lr_gain1$depth, 
+        xlab="Percentile", ylab = "Mean Share", main = "linear regression Decile-wise Lift Chart", col="pink")
+
+# RMSE
+library(Metrics)
+RMSE <- rmse(MVP_valid_df$Share, lr_predict1)
+
+# MAE
+MAE <- mae(MVP_valid_df$Share, lr_predict1)
+
+# MAPE
+library(MLmetrics)
+MAPE <- MAPE(y_pred = MVP_valid_df$Share, y_true = lr_predict1)
+
+b<- data.frame()
+b<-rbind(b,data.frame( model = 'Linear regression',
+                       RMSE = RMSE,
+                         MAE = MAE
+                        ))
+
+b
+```
+##### linear regression (PCA) 
+```{r}
+# linear regression PCA
+linear_model2 <- lm(Share ~ ., data = MVP_train_pca_df)
+summary(linear_model2)
+
+lr_predict2 <- predict(linear_model2, MVP_valid_pca_df)
+
+# evaluating predictive performance 
+library(gains)
+lr_gain2 <- gains(MVP_valid_pca_df$Share, lr_predict2)
+options(scipen=999)
+lr_share2 <- (MVP_valid_pca_df$Share)
+
+# Lift chart
+par(pty="s")
+plot(c(0,lr_gain2$cume.pct.of.total*sum(lr_share2))~c(0,lr_gain2$cume.obs), 
+     xlab = "# cases", ylab = "Cumulative Share", main = "linear regression (PCA) Lift Chart", type = "l", col = "blue")
+# baseline
+lines(c(0,sum(lr_share2))~c(0,dim(MVP_valid_pca_df)[1]), col = "purple", lty = 2)
+
+# Decie-wise lift chart
+barplot(lr_gain2$mean.resp/mean(lr_share2), names.arg = lr_gain2$depth, 
+        xlab="Percentile", ylab = "Mean Share", main = "linear regression (PCA) Decile-wise Lift Chart", col="pink")
+
+# RMSE
+RMSE <- rmse(MVP_valid_pca_df$Share, lr_predict2)
+
+# MAE
+MAE <- mae(MVP_valid_df$Share, lr_predict2)
+
+# MAPE
+MAPE <- MAPE(y_pred = MVP_valid_pca_df$Share, y_true = lr_predict2)
+
+b<-rbind(b,data.frame( model = 'Linear regression(PCA)',
+                       RMSE = RMSE,
+                         MAE = MAE
+                        ))
+
+b
+```
+
+##### k-NN
+```{r}
+library(caret)
+# compute k-NN for different k from 1 to 20 on validation set.
+knn_rmse_df <- data.frame(k = seq(1, 20, 1), RMSE = 0)
+for(i in 1:20){
+  knn <- knnreg(Share~.,data=MVP_train_df, k=i)
+  knn_pred <- predict(knn, MVP_valid_df)
+  knn_rmse_df[i,2] <- rmse(MVP_valid_df$Share, knn_pred)
+}
+knn_rmse_df 
+
+# select k = 9
+knn1 <- knnreg(Share~.,data=MVP_train_df, k=9)
+knn_predict1 <- predict(knn1, MVP_valid_df)
+
+# evaluating predictive performance 
+library(gains)
+knn_gain1 <- gains(MVP_valid_df$Share, knn_predict1)
+options(scipen=999)
+knn_share1 <- (MVP_valid_df$Share)
+
+# Lift chart
+par(pty="s")
+plot(c(0,knn_gain1$cume.pct.of.total*sum(knn_share1))~c(0,knn_gain1$cume.obs), 
+     xlab = "# cases", ylab = "Cumulative Share", main = " k-NN Lift Chart", type = "l", col = "blue")
+# baseline
+lines(c(0,sum(knn_share1))~c(0,dim(MVP_valid_df)[1]), col = "purple", lty = 2)
+
+# Decile-wise lift chart
+barplot(knn_gain1$mean.resp/mean(knn_share1), names.arg = knn_gain1$depth, 
+        xlab="Percentile", ylab = "Mean Share", main = " k-NN  Decile-wise Lift Chart", col="pink")
+
+# rmse
+library(Metrics)
+RMSE <- rmse(MVP_valid_df$Share, knn_predict1)
+
+# MAE
+MAE <- mae(MVP_valid_pca_df$Share, knn_predict1)
+
+# MAPE
+library(MLmetrics)
+MAPE <- MAPE(y_pred = MVP_valid_df$Share, y_true = knn_predict1)
+
+b<-rbind(b,data.frame( model = 'k-NN',
+                       RMSE = RMSE,
+                         MAE = MAE
+                        ))
+
+b
+```
+##### k-NN (PCA)
+```{r}
+# compute k-NN for different k from 1 to 20 on validation set.
+knn_rmse_df <- data.frame(k = seq(1, 20, 1), RMSE = 0)
+for(i in 1:20){
+  knn <- knnreg(Share~.,data=MVP_train_pca_df, k=i)
+  knn_pred <- predict(knn, MVP_valid_pca_df)
+  knn_rmse_df[i,2] <- rmse(MVP_valid_pca_df$Share, knn_pred)
+}
+knn_rmse_df 
+
+# select k = 8
+knn2 <- knnreg(Share~.,data=MVP_train_pca_df, k=8)
+knn_predict2 <- predict(knn2, MVP_valid_pca_df)
+
+# evaluating predictive performance 
+library(gains)
+knn_gain2 <- gains(MVP_valid_pca_df$Share, knn_predict1)
+options(scipen=999)
+knn_share2 <- (MVP_valid_pca_df$Share)
+
+# Lift chart
+par(pty="s")
+plot(c(0,knn_gain2$cume.pct.of.total*sum(knn_share2))~c(0,knn_gain2$cume.obs), 
+     xlab = "# cases", ylab = "Cumulative Share", main = " k-NN (PCA) Lift Chart", type = "l", col = "blue")
+# baseline
+lines(c(0,sum(knn_share2))~c(0,dim(MVP_valid_pca_df)[1]), col = "purple", lty = 2)
+
+# Decile-wise lift chart
+barplot(knn_gain2$mean.resp/mean(knn_share2), names.arg = knn_gain2$depth, 
+        xlab="Percentile", ylab = "Mean Share", main = " k-NN (PCA) Decile-wise Lift Chart", col="pink")
+
+# rmse
+library(Metrics)
+RMSE <- rmse(MVP_valid_pca_df$Share, knn_predict2)
+
+# MAE
+MAE <- mae(MVP_valid_pca_df$Share, knn_predict2)
+
+# MAPE
+library(MLmetrics)
+MAPE <- MAPE(y_pred = MVP_valid_pca_df$Share, y_true = knn_predict2)
+
+b<-rbind(b,data.frame( model = 'k-NN(PCA)',
+                       RMSE = RMSE,
+                         MAE = MAE
+                        ))
+
+b
+```
+
+##### regression tree 
+```{r}
+library(rpart)
+library(rpart.plot)
+# run a regression tree
+regression_tree1 <- rpart(Share~., data = MVP_train_df, method = "anova")
+
+prp(regression_tree1, type = 1, extra = 1, split.font = 1, varlen = -10, under = TRUE)
+
+rt_predict1 <- predict(regression_tree1, MVP_valid_df)
+
+# evaluating predictive performance 
+library(gains)
+rt_gain1 <- gains(MVP_valid_df$Share, rt_predict1)
+options(scipen=999)
+rt_share1 <- (MVP_valid_df$Share)
+
+# Lift chart
+par(pty="s")
+plot(c(0,rt_gain1$cume.pct.of.total*sum(rt_share1))~c(0,rt_gain1$cume.obs), 
+     xlab = "# cases", ylab = "Cumulative Share", main = "regression tree Lift Chart", type = "l", col = "blue")
+# baseline
+lines(c(0,sum(rt_share1))~c(0,dim(MVP_valid_df)[1]), col = "purple", lty = 2)
+
+# Decile-wise lift chart
+barplot(rt_gain1$mean.resp/mean(rt_share1), names.arg = rt_gain1$depth, 
+        xlab="Percentile", ylab = "Mean Share", main = " regression tree Decile-wise Lift Chart", col="pink")
+
+# rmse
+library(Metrics)
+RMSE <- rmse(MVP_valid_df$Share, rt_predict1)
+# MAE
+MAE <- mae(MVP_valid_df$Share, rt_predict1)
+
+# MAPE
+library(MLmetrics)
+MAPE <- MAPE(y_pred = MVP_valid_df$Share, y_true = rt_predict1)
+
+b<-rbind(b,data.frame( model = 'regression tree',
+                       RMSE = RMSE,
+                         MAE = MAE
+                        ))
+
+b
+```
+##### regression tree (PCA)
+```{r}
+# run a regression tree
+regression_tree2 <- rpart(Share~., data = MVP_train_pca_df, method = "anova")
+
+prp(regression_tree2, type = 1, extra = 1, split.font = 1, varlen = -10, under = TRUE)
+
+rt_predict2 <- predict(regression_tree2, MVP_valid_pca_df)
+
+# evaluating predictive performance 
+library(gains)
+rt_gain2 <- gains(MVP_valid_pca_df$Share, rt_predict2)
+options(scipen=999)
+rt_share2 <- (MVP_valid_pca_df$Share)
+
+# Lift chart
+par(pty="s")
+plot(c(0,rt_gain2$cume.pct.of.total*sum(rt_share2))~c(0,rt_gain2$cume.obs), 
+     xlab = "# cases", ylab = "Cumulative Share", main = " regression tree (PCA) Lift Chart", type = "l", col = "blue")
+# baseline
+lines(c(0,sum(rt_share2))~c(0,dim(MVP_valid_pca_df)[1]), col = "purple", lty = 2)
+
+# Decile-wise lift chart
+barplot(rt_gain2$mean.resp/mean(rt_share2), names.arg = rt_gain2$depth, 
+        xlab="Percentile", ylab = "Mean Share", main = " regression tree (PCA) Decile-wise Lift Chart", col="pink")
+
+# rmse
+library(Metrics)
+RMSE <- rmse(MVP_valid_pca_df$Share, rt_predict2)
+
+MAE <- mae(MVP_valid_df$Share, rt_predict2)
+
+# MAPE
+library(MLmetrics)
+MAPE <- MAPE(y_pred = MVP_valid_pca_df$Share, y_true = rt_predict2)
+
+b<-rbind(b,data.frame( model = 'regression tree(PCA)',
+                       RMSE = RMSE,
+                         MAE = MAE
+                        ))
+
+b
+```
+
+##### random forest 
+```{r}
+# random forest regression
+MVP_train_RFdf1 <- MVP_train_df
+MVP_valid_RFdf1 <- MVP_valid_df
+set.seed(100)
+library(randomForest)
+RF_model1<-randomForest(Share ~ ., data = MVP_train_RFdf1)
+importance(RF_model1)
+varImpPlot(RF_model1)
+
+pred1=predict(RF_model1,data =MVP_valid_RFdf1)
+MVP_valid_RFdf1$rf_predict1 <- 0
+MVP_valid_RFdf1$rf_predict1[which(MVP_valid_RFdf1$rf_predict1==0)] <- pred1
+
+
+
+# evaluating predictive performance 
+library(gains)
+rf_gain1 <- gains(MVP_valid_RFdf1$Share, MVP_valid_RFdf1$rf_predict1)
+options(scipen=999)
+rf_share1 <- (MVP_valid_RFdf1$Share)
+
+# Lift chart
+par(pty="s")
+plot(c(0,rf_gain1$cume.pct.of.total*sum(rf_share1))~c(0,rf_gain1$cume.obs), 
+     xlab = "# cases", ylab = "Cumulative Share", main = "random forest Lift Chart", type = "l", col = "blue")
+# baseline
+lines(c(0,sum(rf_share1))~c(0,dim(MVP_valid_RFdf1)[1]), col = "purple", lty = 2)
+
+# Decile-wise lift chart
+barplot(rf_gain1$mean.resp/mean(rf_share1), names.arg = rf_gain1$depth, 
+        xlab="Percentile", ylab = "Mean Share", main = "random forest Decile-wise Lift Chart", col="pink")
+
+# rmse
+library(Metrics)
+RMSE <- rmse(MVP_valid_RFdf1$Share, MVP_valid_RFdf1$rf_predict1)
+
+# MAE
+MAE <- mae(MVP_valid_RFdf1$Share, MVP_valid_RFdf1$rf_predict1)
+
+# MAPE
+library(MLmetrics)
+MAPE <- MAPE(y_pred = MVP_valid_RFdf1$Share, y_true = MVP_valid_RFdf1$rf_predict1)
+
+b<-rbind(b,data.frame( model = 'random forest',
+                       RMSE = RMSE,
+                         MAE = MAE
+                        ))
+
+b
+```
+##### random forest (PCA)
+```{r}
+MVP_train_RFdf2 <- MVP_train_pca_df
+MVP_valid_RFdf2 <- MVP_valid_pca_df
+set.seed(100)
+# random forest regression PCA
+RF_model2<-randomForest(Share ~ ., data = MVP_train_RFdf2)
+importance(RF_model2)
+varImpPlot(RF_model2)
+
+pred2=predict(RF_model2,data =MVP_valid_RFdf2)
+#library(ROCR)
+MVP_valid_RFdf2$rf_predict2 <- 0
+MVP_valid_RFdf2$rf_predict2[which(MVP_valid_RFdf2$rf_predict2==0)] <- pred2
+
+
+
+# evaluating predictive performance 
+library(gains)
+rf_gain2 <- gains(MVP_valid_RFdf2$Share, MVP_valid_RFdf2$rf_predict2)
+options(scipen=999)
+rf_share2 <- (MVP_valid_RFdf2$Share)
+
+# Lift chart
+par(pty="s")
+plot(c(0,rf_gain2$cume.pct.of.total*sum(rf_share2))~c(0,rf_gain2$cume.obs), 
+     xlab = "# cases", ylab = "Cumulative Share", main = "random forest (PCA) Lift Chart", type = "l", col = "blue")
+# baseline
+lines(c(0,sum(rf_share2))~c(0,dim(MVP_valid_RFdf2)[1]), col = "purple", lty = 2)
+
+# Decile-wise lift chart
+barplot(rf_gain2$mean.resp/mean(rf_share2), names.arg = rf_gain2$depth, 
+        xlab="Percentile", ylab = "Mean Share", main = "random forest (PCA) Decile-wise Lift Chart", col="pink")
+
+# rmse
+library(Metrics)
+RMSE <- rmse(MVP_valid_RFdf2$Share, MVP_valid_RFdf2$rf_predict2)
+
+# MAE
+MAE <- mae(MVP_valid_RFdf2$Share, MVP_valid_RFdf2$rf_predict2)
+
+# MAPE
+library(MLmetrics)
+MAPE <- MAPE(y_pred = MVP_valid_RFdf2$Share, y_true = MVP_valid_RFdf2$rf_predict2)
+
+b<-rbind(b,data.frame( model = 'random forest(PCA)',
+                       RMSE = RMSE,
+                         MAE = MAE
+                        ))
+
+b
+```
+
+##### neural network 
+```{r}
+MVP_train_nndf1 <- MVP_train_df
+MVP_valid_nndf1 <- MVP_valid_df
+
+set.seed(100)
+# neural network
+library("neuralnet")
+NN_model1<-neuralnet(Share ~ ., data = MVP_train_nndf1,hidden = 3, threshold = 0.01)
+pred1 <- compute(NN_model1,covariate = MVP_valid_nndf1[,-1] )
+MVP_valid_nndf1$nn_predict1 <- 0
+MVP_valid_nndf1$nn_predict1[which(MVP_valid_nndf1$nn_predict1==0)] <- pred1$net.result
+
+plot(NN_model1, main = " Neural Network")
+
+# evaluating predictive performance 
+library(gains)
+nn_gain1 <- gains(MVP_valid_nndf1$Share, MVP_valid_nndf1$nn_predict1)
+options(scipen=999)
+nn_share1 <- (MVP_valid_nndf1$Share)
+
+# Lift chart
+par(pty="s")
+plot(c(0,nn_gain1$cume.pct.of.total*sum(nn_share1))~c(0,nn_gain1$cume.obs), 
+     xlab = "# cases", ylab = "Cumulative Share", main = "neural network Lift Chart", type = "l", col = "blue")
+# baseline
+lines(c(0,sum(nn_share1))~c(0,dim(MVP_valid_nndf1)[1]), col = "purple", lty = 2)
+
+# Decile-wise lift chart
+barplot(nn_gain1$mean.resp/mean(nn_share1), names.arg = nn_gain1$depth, 
+        xlab="Percentile", ylab = "Mean Share", main = "neural network Decile-wise Lift Chart", col="pink")
+
+# rmse
+library(Metrics)
+RMSE <- rmse(MVP_valid_nndf1$Share, MVP_valid_nndf1$nn_predict1)
+
+# MAE
+MAE <- mae(MVP_valid_nndf1$Share, MVP_valid_nndf1$nn_predict1)
+ 
+
+library(MLmetrics)
+# MAPE
+MAPE <- MAPE(y_pred = MVP_valid_nndf1$Share, y_true = MVP_valid_nndf1$nn_predict1)
+
+b<-rbind(b,data.frame( model = 'neural network',
+                       RMSE = RMSE,
+                         MAE = MAE
+                        ))
+
+b
+```
+##### neural network (PCA)
+```{r}
+MVP_train_nndf2 <- MVP_train_pca_df
+MVP_valid_nndf2 <- MVP_valid_pca_df
+
+set.seed(100)
+# neural network(PCA)
+NN_model2<-neuralnet(Share ~ ., data = MVP_train_nndf2,hidden = 3, threshold = 0.01)
+pred2 <- compute(NN_model2,covariate = MVP_valid_nndf2[,-1] )
+MVP_valid_nndf2$nn_predict2 <- 0
+MVP_valid_nndf2$nn_predict2[which(MVP_valid_nndf2$nn_predict2==0)] <- pred2$net.result
+
+plot(NN_model2, main = " Neural Network (PCA)")
+# evaluating predictive performance 
+library(gains)
+nn_gain2 <- gains(MVP_valid_nndf2$Share, MVP_valid_nndf2$nn_predict2)
+options(scipen=999)
+nn_share2 <- (MVP_valid_nndf2$Share)
+
+# Lift chart
+par(pty="s")
+plot(c(0,nn_gain2$cume.pct.of.total*sum(nn_share2))~c(0,nn_gain2$cume.obs), 
+     xlab = "# cases", ylab = "Cumulative Share", main = "neural network (PCA) Lift Chart", type = "l", col = "blue")
+# baseline
+lines(c(0,sum(nn_share2))~c(0,dim(MVP_valid_nndf2)[1]), col = "purple", lty = 2)
+
+# Decile-wise lift chart
+barplot(nn_gain2$mean.resp/mean(nn_share2), names.arg = nn_gain2$depth, 
+        xlab="Percentile", ylab = "Mean Share", main = "neural network (PCA) Decile-wise Lift Chart", col="pink")
+
+# rmse
+library(Metrics)
+RMSE <- rmse(MVP_valid_nndf2$Share, MVP_valid_nndf2$nn_predict2)
+
+# MAE
+MAE <- mae(MVP_valid_nndf2$Share, MVP_valid_nndf2$nn_predict2)
+ 
+# MAPE
+library(MLmetrics)
+MAPE <- MAPE(y_pred = MVP_valid_nndf2$Share, y_true = MVP_valid_nndf2$nn_predict2)
+
+b<-rbind(b,data.frame( model = 'neural network(PCA)',
+                       RMSE = RMSE,
+                         MAE = MAE
+                        ))
+
+b
+```
+
+#### SVM
+```{r}
+library(e1071)
+svm_model1 <- svm(MVP_train_df[,2:12], MVP_train_df[,1])
+summary(svm_model1)
+svm_predict1 <- predict(svm_model1, MVP_valid_df[,2:12])
+
+# evaluating predictive performance 
+library(gains)
+svm_gain1 <- gains(MVP_valid_df$Share, svm_predict1)
+options(scipen=999)
+svm_share1 <- (MVP_valid_df$Share)
+
+# Lift chart
+par(pty="s")
+plot(c(0,svm_gain1$cume.pct.of.total*sum(svm_share1))~c(0,svm_gain1$cume.obs), 
+     xlab = "# cases", ylab = "Cumulative Share", main = "SVM Lift Chart", type = "l", col = "blue")
+# baseline
+lines(c(0,sum(svm_share1))~c(0,dim(MVP_valid_df)[1]), col = "purple", lty = 2)
+
+# Decile-wise lift chart
+barplot(svm_gain1$mean.resp/mean(svm_share1), names.arg = svm_gain1$depth, 
+        xlab="Percentile", ylab = "Mean Share", main = "SVM Decile-wise Lift Chart", col="pink")
+
+# RMSE
+library(Metrics)
+RMSE <- rmse(MVP_valid_df$Share, svm_predict1)
+
+# MAE
+MAE <- mae(MVP_valid_df$Share, svm_predict1)
+
+# MAPE
+library(MLmetrics)
+MAPE <- MAPE(y_pred = MVP_valid_df$Share, y_true = svm_predict1)
+
+b<-rbind(b,data.frame( model = 'SVM',
+                       RMSE = RMSE,
+                         MAE = MAE
+                        ))
+
+b
+```
+#### SVM (PCA)
+```{r}
+library(e1071)
+svm_model2 <- svm(MVP_train_pca_df[,2:6], MVP_train_pca_df[,1])
+summary(svm_model2)
+svm_predict2 <- predict(svm_model2, MVP_valid_pca_df[,2:6])
+
+# evaluating predictive performance 
+library(gains)
+svm_gain2 <- gains(MVP_valid_pca_df$Share, svm_predict2)
+options(scipen=999)
+svm_share2 <- (MVP_valid_pca_df$Share)
+
+# Lift chart
+par(pty="s")
+plot(c(0,svm_gain2$cume.pct.of.total*sum(svm_share2))~c(0,svm_gain2$cume.obs), 
+     xlab = "# cases", ylab = "Cumulative Share", main = "SVM  (PCA) Lift Chart", type = "l", col = "blue")
+# baseline
+lines(c(0,sum(svm_share2))~c(0,dim(MVP_valid_df)[1]), col = "purple", lty = 2)
+
+# Decile-wise lift chart
+barplot(svm_gain2$mean.resp/mean(svm_share2), names.arg = svm_gain2$depth, 
+        xlab="Percentile", ylab = "Mean Share", main = "SVM (PCA) Decile-wise Lift Chart", col="pink")
+
+# RMSE
+library(Metrics)
+RMSE <- rmse(MVP_valid_pca_df$Share, svm_predict2)
+
+# MAE
+MAE <- mae(MVP_valid_df$Share, svm_predict2)
+
+# MAPE
+library(MLmetrics)
+MAPE <- MAPE(y_pred = MVP_valid_pca_df$Share, y_true = svm_predict2)
+
+b<-rbind(b,data.frame( model = 'SVM',
+                       RMSE = RMSE,
+                         MAE = MAE
+                        ))
+
+b
+```
+
+```{r}
+svm_predict_test <- predict(svm_model1, MVP_norm_df_t[,2:12])
+svm_test_result <- cbind(svm_predict_test, MVP_df_test$Player)
+svm_test_result
+```
+
+
+
+
+
+
+
+
+
+
